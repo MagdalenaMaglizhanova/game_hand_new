@@ -299,6 +299,18 @@
       margin-bottom: 10px;
     }
 
+    .debug-info {
+      position: fixed;
+      bottom: 10px;
+      left: 10px;
+      background: rgba(0,0,0,0.7);
+      color: white;
+      padding: 10px;
+      border-radius: 5px;
+      font-family: monospace;
+      z-index: 1000;
+    }
+
     @media (max-width: 768px) {
       :root {
         --card-width: 80px;
@@ -315,6 +327,10 @@
       .camera-box {
         width: 250px;
         height: 250px;
+      }
+      
+      .debug-info {
+        display: none;
       }
     }
   </style>
@@ -361,6 +377,10 @@
     </div>
   </div>
 
+  <div class="debug-info" id="debug-info">
+    Debug info will appear here
+  </div>
+
   <!-- TensorFlow.js библиотека -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.9.0/dist/tf.min.js"></script>
   <!-- Teachable Machine библиотека -->
@@ -381,6 +401,7 @@
     let model, webcam;
     let isReadingGestures = false;
     let currentGestureToCapture = 0;
+    let lastPrediction = null;
 
     // DOM elements
     const deck = document.getElementById('deck');
@@ -398,6 +419,7 @@
     const captureBtn = document.getElementById('capture');
     const capturedGesturesDiv = document.getElementById('captured-gestures');
     const currentStep = document.getElementById('current-step');
+    const debugInfo = document.getElementById('debug-info');
 
     // Initialize the model and webcam
     async function initModel() {
@@ -410,11 +432,13 @@
         await setupWebcam();
         
         console.log("Model and webcam initialized successfully");
+        updateDebugInfo("Model and webcam ready");
       } catch (error) {
         console.error("Error initializing model:", error);
         cameraPlaceholder.textContent = "Camera error. Please allow camera access and reload.";
         resultDiv.textContent = "Error loading camera. Please allow camera access.";
         resultDiv.className = "result lose";
+        updateDebugInfo(`Error: ${error.message}`);
       }
     }
 
@@ -440,6 +464,7 @@
           // Wait for video to be ready
           webcamVideo.onloadedmetadata = () => {
             console.log("Webcam ready");
+            updateDebugInfo("Webcam stream started");
             resolve();
           };
           
@@ -453,30 +478,79 @@
         } catch (error) {
           console.error("Webcam error:", error);
           cameraPlaceholder.textContent = "Camera access denied. Please allow camera access.";
+          updateDebugInfo(`Camera error: ${error.message}`);
           reject(error);
         }
       });
     }
 
+    // Update debug information
+    function updateDebugInfo(message) {
+      debugInfo.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+      console.log(message);
+    }
+
+    // Enhanced prediction function
+    async function getEnhancedPrediction() {
+      if (!webcam || !model) return null;
+      
+      try {
+        // Get the canvas element
+        const canvas = webcam.canvas;
+        
+        // Verify canvas has valid data
+        if (canvas.width === 0 || canvas.height === 0) {
+          updateDebugInfo("Canvas has zero dimensions");
+          return null;
+        }
+        
+        // Make prediction
+        const predictions = await model.predict(canvas);
+        
+        // Sort predictions by probability
+        predictions.sort((a, b) => b.probability - a.probability);
+        
+        // Only accept predictions with high confidence
+        if (predictions[0].probability > 0.85) {
+          return {
+            className: predictions[0].className,
+            probability: predictions[0].probability,
+            allPredictions: predictions.map(p => `${p.className}: ${(p.probability*100).toFixed(1)}%`)
+          };
+        }
+        
+        return null;
+      } catch (error) {
+        updateDebugInfo(`Prediction error: ${error.message}`);
+        return null;
+      }
+    }
+
     // Prediction loop to show current gesture
     async function loop() {
       if (webcam && model) {
-        const prediction = await getPrediction();
+        lastPrediction = await getEnhancedPrediction();
         
-        // Update UI with current prediction
-        if (prediction) {
-          gesturePreview.textContent = gestures[prediction.className] || '❓';
-          gestureText.textContent = `${prediction.className} (${Math.round(prediction.probability * 100)}%)`;
-          confidenceLevel.style.width = `${prediction.probability * 100}%`;
+        if (lastPrediction) {
+          // Update UI with current prediction
+          gesturePreview.textContent = gestures[lastPrediction.className] || '❓';
+          gestureText.textContent = `${lastPrediction.className} (${Math.round(lastPrediction.probability * 100)}%)`;
+          confidenceLevel.style.width = `${lastPrediction.probability * 100}%`;
           
           // Change color based on confidence
-          if (prediction.probability > 0.9) {
+          if (lastPrediction.probability > 0.9) {
             confidenceLevel.style.background = 'var(--success)';
-          } else if (prediction.probability > 0.7) {
+          } else if (lastPrediction.probability > 0.7) {
             confidenceLevel.style.background = 'var(--primary)';
           } else {
             confidenceLevel.style.background = 'var(--error)';
           }
+          
+          updateDebugInfo(`Detected: ${lastPrediction.className} (${(lastPrediction.probability*100).toFixed(1)}%) | All: ${lastPrediction.allPredictions.join(', ')}`);
+        } else {
+          gesturePreview.textContent = '❓';
+          gestureText.textContent = 'No gesture detected';
+          confidenceLevel.style.width = '0%';
         }
       }
       requestAnimationFrame(loop);
@@ -521,6 +595,7 @@
         const { container, card } = createCard(gestures[gestureName]);
         deck.appendChild(container);
         cards.push(card);
+        updateDebugInfo(`Sequence ${i+1}: ${gestureName}`);
       }
 
       // Flip animation with delays
@@ -542,22 +617,12 @@
       currentGestureToCapture = 0;
       updateStepText();
       capturedGesturesDiv.innerHTML = "";
+      updateDebugInfo("Showing sequence completed");
     }
 
     // Update the step text
     function updateStepText() {
       currentStep.textContent = `Capture gesture ${currentGestureToCapture + 1} of ${sequence.length}`;
-    }
-
-    // Get prediction from the model
-    async function getPrediction() {
-      if (!webcam || !model) return null;
-      const predictions = await model.predict(webcam.canvas);
-      predictions.sort((a, b) => b.probability - a.probability);
-      return {
-        className: predictions[0].className,
-        probability: predictions[0].probability
-      };
     }
 
     // Capture user gesture
@@ -574,22 +639,33 @@
       
       await new Promise(r => setTimeout(r, 300)); // small delay for better UX
       
-      const prediction = await getPrediction();
-      const gesture = prediction.className;
+      if (!lastPrediction) {
+        gestureText.textContent = "No gesture detected! Try again";
+        gestureText.style.color = "var(--error)";
+        isReadingGestures = false;
+        captureBtn.disabled = false;
+        updateDebugInfo("Capture failed: No gesture detected");
+        return;
+      }
+      
+      const gesture = lastPrediction.className;
       userInput.push(gesture);
+      updateDebugInfo(`Captured gesture: ${gesture}`);
       
       // Add to captured gestures display
       const gestureDiv = document.createElement('div');
       gestureDiv.className = 'captured-gesture';
       gestureDiv.textContent = gestures[gesture];
       gestureDiv.setAttribute('data-label', gesture);
-      gestureDiv.title = `${gesture} (${Math.round(prediction.probability * 100)}%)`;
+      gestureDiv.title = `${gesture} (${Math.round(lastPrediction.probability * 100)}%)`;
       
       // Color feedback
       if (gesture === sequence[currentGestureToCapture]) {
         gestureDiv.style.background = 'rgba(0, 230, 118, 0.2)';
+        updateDebugInfo(`Correct gesture: ${gesture}`);
       } else {
         gestureDiv.style.background = 'rgba(255, 82, 82, 0.2)';
+        updateDebugInfo(`Incorrect gesture. Expected: ${sequence[currentGestureToCapture]}, Got: ${gesture}`);
       }
       
       capturedGesturesDiv.appendChild(gestureDiv);
@@ -601,6 +677,7 @@
       if (currentGestureToCapture >= sequence.length) {
         submitBtn.disabled = false;
         captureSection.style.display = "none";
+        updateDebugInfo("All gestures captured. Ready to submit.");
       }
       
       await new Promise(r => setTimeout(r, 500)); // show feedback
@@ -617,9 +694,11 @@
       if (win) {
         resultDiv.textContent = '🎉 You win! Great memory!';
         resultDiv.className = "result win";
+        updateDebugInfo("Game result: WIN");
       } else {
         resultDiv.textContent = '❌ Try again. Watch closely!';
         resultDiv.className = "result lose";
+        updateDebugInfo("Game result: LOSE");
         
         // Show what the correct sequence was
         const correctSequence = sequence.map(g => `${gestures[g]} (${g})`).join(' ');
